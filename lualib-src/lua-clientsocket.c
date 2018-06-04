@@ -2,6 +2,8 @@
 // It's only for demo, limited feature. Don't use it in your project.
 // Rewrite socket library by yourself .
 
+#define LUA_LIB
+
 #include <lua.h>
 #include <lauxlib.h>
 #include <string.h>
@@ -128,11 +130,8 @@ lusleep(lua_State *L) {
 
 #define QUEUE_SIZE 1024
 
-#define LOCK(q) while (__sync_lock_test_and_set(&(q)->lock,1)) {}
-#define UNLOCK(q) __sync_lock_release(&(q)->lock);
-
 struct queue {
-	int lock;
+	pthread_mutex_t lock;
 	int head;
 	int tail;
 	char * queue[QUEUE_SIZE];
@@ -153,7 +152,7 @@ readline_stdin(void * arg) {
 		memcpy(str, tmp, n);
 		str[n] = 0;
 
-		LOCK(q);
+		pthread_mutex_lock(&q->lock);
 		q->queue[q->tail] = str;
 
 		if (++q->tail >= QUEUE_SIZE) {
@@ -163,7 +162,7 @@ readline_stdin(void * arg) {
 			// queue overflow
 			exit(1);
 		}
-		UNLOCK(q);
+		pthread_mutex_unlock(&q->lock);
 	}
 	return NULL;
 }
@@ -171,23 +170,23 @@ readline_stdin(void * arg) {
 static int
 lreadstdin(lua_State *L) {
 	struct queue *q = lua_touserdata(L, lua_upvalueindex(1));
-	LOCK(q);
+	pthread_mutex_lock(&q->lock);
 	if (q->head == q->tail) {
-		UNLOCK(q);
+		pthread_mutex_unlock(&q->lock);
 		return 0;
 	}
 	char * str = q->queue[q->head];
 	if (++q->head >= QUEUE_SIZE) {
 		q->head = 0;
 	}
-	UNLOCK(q);
+	pthread_mutex_unlock(&q->lock);
 	lua_pushstring(L, str);
 	free(str);
 	return 1;
 }
 
-int
-luaopen_clientsocket(lua_State *L) {
+LUAMOD_API int
+luaopen_client_socket(lua_State *L) {
 	luaL_checkversion(L);
 	luaL_Reg l[] = {
 		{ "connect", lconnect },
@@ -201,6 +200,7 @@ luaopen_clientsocket(lua_State *L) {
 
 	struct queue * q = lua_newuserdata(L, sizeof(*q));
 	memset(q, 0, sizeof(*q));
+	pthread_mutex_init(&q->lock, NULL);
 	lua_pushcclosure(L, lreadstdin, 1);
 	lua_setfield(L, -2, "readstdin");
 

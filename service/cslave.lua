@@ -1,5 +1,7 @@
 local skynet = require "skynet"
-local socket = require "socket"
+local socket = require "skynet.socket"
+local socketdriver = require "skynet.socketdriver"
+require "skynet.manager"	-- import skynet.launch, ...
 local table = table
 
 local slaves = {}
@@ -9,6 +11,7 @@ local queryname = {}
 local harbor = {}
 local harbor_service
 local monitor = {}
+local monitor_master_set = {}
 
 local function read_package(fd)
 	local sz = socket.read(fd, 1)
@@ -39,6 +42,7 @@ local function connect_slave(slave_id, address)
 	local ok, err = pcall(function()
 		if slaves[slave_id] == nil then
 			local fd = assert(socket.open(address), "Can't connect to "..address)
+			socketdriver.nodelay(fd)
 			skynet.error(string.format("Connect to harbor %d (fd=%d), %s", slave_id, fd, address))
 			slaves[slave_id] = fd
 			monitor_clear(slave_id)
@@ -58,7 +62,7 @@ local function ready()
 		connect_slave(k,v)
 	end
 	for name,address in pairs(globalname) do
-		skynet.redirect(harbor_service, address, "harbor", "N " .. name)
+		skynet.redirect(harbor_service, address, "harbor", 0, "N " .. name)
 	end
 end
 
@@ -99,6 +103,9 @@ local function monitor_master(master_fd)
 			end
 		else
 			skynet.error("Master disconnect")
+			for _, v in ipairs(monitor_master_set) do
+				v(true)
+			end
 			socket.close(master_fd)
 			break
 		end
@@ -183,6 +190,10 @@ function harbor.LINK(fd, id)
 	end
 end
 
+function harbor.LINKMASTER()
+	table.insert(monitor_master_set, skynet.response())
+end
+
 function harbor.CONNECT(fd, id)
 	if not slaves[id] then
 		if monitor[id] == nil then
@@ -206,6 +217,7 @@ function harbor.QUERYNAME(fd, name)
 	end
 	local queue = queryname[name]
 	if queue == nil then
+		socket.write(fd, pack_package("Q", name))
 		queue = { skynet.response() }
 		queryname[name] = queue
 	else
@@ -239,6 +251,7 @@ skynet.start(function()
 		local co = coroutine.running()
 		socket.start(slave_fd, function(fd, addr)
 			skynet.error(string.format("New connection (fd = %d, %s)",fd, addr))
+			socketdriver.nodelay(fd)
 			if pcall(accept_slave,fd) then
 				local s = 0
 				for k,v in pairs(slaves) do
@@ -250,8 +263,11 @@ skynet.start(function()
 			end
 		end)
 		skynet.wait()
+		socket.close(slave_fd)
+	else
+		-- slave_fd does not start, so use close_fd.
+		socket.close_fd(slave_fd)
 	end
-	socket.close(slave_fd)
 	skynet.error("Shakehand ready")
 	skynet.fork(ready)
 end)

@@ -1,9 +1,10 @@
 local skynet = require "skynet"
-local netpack = require "netpack"
-local socket = require "socket"
+local netpack = require "skynet.netpack"
+local socket = require "skynet.socket"
 local sproto = require "sproto"
-local bit32 = require "bit32"
+local sprotoloader = require "sprotoloader"
 
+local WATCHDOG
 local host
 local send_request
 
@@ -26,6 +27,10 @@ function REQUEST:handshake()
 	return { msg = "Welcome to skynet, I will send heartbeat every 5 sec." }
 end
 
+function REQUEST:quit()
+	skynet.call(WATCHDOG, "lua", "close", client_fd)
+end
+
 local function request(name, args, response)
 	local f = assert(REQUEST[name])
 	local r = f(args)
@@ -35,11 +40,7 @@ local function request(name, args, response)
 end
 
 local function send_package(pack)
-	local size = #pack
-	local package = string.char(bit32.extract(size,8,8)) ..
-		string.char(bit32.extract(size,0,8))..
-		pack
-
+	local package = string.pack(">s2", pack)
 	socket.write(client_fd, package)
 end
 
@@ -49,7 +50,10 @@ skynet.register_protocol {
 	unpack = function (msg, sz)
 		return host:dispatch(msg, sz)
 	end,
-	dispatch = function (_, _, type, ...)
+	dispatch = function (fd, _, type, ...)
+		assert(fd == client_fd)	-- You can use fd to reply message
+		skynet.ignoreret()	-- session is fd, don't call skynet.ret
+		skynet.trace()
 		if type == "REQUEST" then
 			local ok, result  = pcall(request, ...)
 			if ok then
@@ -66,9 +70,13 @@ skynet.register_protocol {
 	end
 }
 
-function CMD.start(gate, fd, proto)
-	host = sproto.new(proto.c2s):host "package"
-	send_request = host:attach(sproto.new(proto.s2c))
+function CMD.start(conf)
+	local fd = conf.client
+	local gate = conf.gate
+	WATCHDOG = conf.watchdog
+	-- slot 1,2 set at main.lua
+	host = sprotoloader.load(1):host "package"
+	send_request = host:attach(sprotoloader.load(2))
 	skynet.fork(function()
 		while true do
 			send_package(send_request "heartbeat")
@@ -80,8 +88,14 @@ function CMD.start(gate, fd, proto)
 	skynet.call(gate, "lua", "forward", fd)
 end
 
+function CMD.disconnect()
+	-- todo: do something before exit
+	skynet.exit()
+end
+
 skynet.start(function()
 	skynet.dispatch("lua", function(_,_, command, ...)
+		skynet.trace()
 		local f = CMD[command]
 		skynet.ret(skynet.pack(f(...)))
 	end)

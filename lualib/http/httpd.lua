@@ -1,6 +1,8 @@
 local internal = require "http.internal"
 
 local table = table
+local string = string
+local type = type
 
 local httpd = {}
 
@@ -83,7 +85,7 @@ local function readall(readbytes, bodylimit)
 	else
 		-- identity mode
 		if length then
-			if length > bodylimit then
+			if bodylimit and length > bodylimit then
 				return 413
 			end
 			if #body >= length then
@@ -112,7 +114,13 @@ local function writeall(writefunc, statuscode, bodyfunc, header)
 	writefunc(statusline)
 	if header then
 		for k,v in pairs(header) do
-			writefunc(string.format("%s: %s\r\n", k,v))
+			if type(v) == "table" then
+				for _,v in ipairs(v) do
+					writefunc(string.format("%s: %s\r\n", k,v))
+				end
+			else
+				writefunc(string.format("%s: %s\r\n", k,v))
+			end
 		end
 	end
 	local t = type(bodyfunc)
@@ -130,6 +138,7 @@ local function writeall(writefunc, statuscode, bodyfunc, header)
 				end
 			else
 				writefunc("\r\n0\r\n\r\n")
+				break
 			end
 		end
 	else

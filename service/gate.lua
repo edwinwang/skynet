@@ -1,6 +1,6 @@
 local skynet = require "skynet"
 local gateserver = require "snax.gateserver"
-local netpack = require "netpack"
+local netpack = require "skynet.netpack"
 
 local watchdog
 local connection = {}	-- fd -> connection : { fd , client, agent , ip, mode }
@@ -22,7 +22,7 @@ function handler.message(fd, msg, sz)
 	local c = connection[fd]
 	local agent = c.agent
 	if agent then
-		skynet.redirect(agent, c.client, "client", 0, msg, sz)
+		skynet.redirect(agent, c.client, "client", fd, msg, sz)
 	else
 		skynet.send(watchdog, "lua", "socket", "data", fd, netpack.tostring(msg, sz))
 	end
@@ -61,6 +61,10 @@ end
 function handler.error(fd, msg)
 	close_fd(fd)
 	skynet.send(watchdog, "lua", "socket", "error", fd, msg)
+end
+
+function handler.warning(fd, size)
+	skynet.send(watchdog, "lua", "socket", "warning", fd, size)
 end
 
 local CMD = {}

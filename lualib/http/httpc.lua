@@ -1,6 +1,8 @@
+local skynet = require "skynet"
 local socket = require "http.sockethelper"
 local url = require "http.url"
 local internal = require "http.internal"
+local dns = require "skynet.dns"
 local string = string
 local table = table
 
@@ -11,16 +13,22 @@ local function request(fd, method, host, url, recvheader, header, content)
 	local write = socket.writefunc(fd)
 	local header_content = ""
 	if header then
+		if not header.host then
+			header.host = host
+		end
 		for k,v in pairs(header) do
 			header_content = string.format("%s%s:%s\r\n", header_content, k, v)
 		end
+	else
+		header_content = string.format("host:%s\r\n",host)
 	end
 
 	if content then
-		local data = string.format("%s %s HTTP/1.1\r\nhost:%s\r\ncontent-length:%d\r\n%s\r\n%s", method, url, host, #content, header_content, content)
+		local data = string.format("%s %s HTTP/1.1\r\n%scontent-length:%d\r\n\r\n", method, url, header_content, #content)
 		write(data)
+		write(content)
 	else
-		local request_header = string.format("%s %s HTTP/1.1\r\nhost:%s\r\ncontent-length:0\r\n%s\r\n", method, url, host, header_content)
+		local request_header = string.format("%s %s HTTP/1.1\r\n%scontent-length:0\r\n\r\n", method, url, header_content)
 		write(request_header)
 	end
 
@@ -65,26 +73,51 @@ local function request(fd, method, host, url, recvheader, header, content)
 				body = body .. padding
 			end
 		else
-			body = nil
+			-- no content-length, read all
+			body = body .. socket.readall(fd)
 		end
 	end
 
 	return code, body
 end
 
+local async_dns
+
+function httpc.dns(server,port)
+	async_dns = true
+	dns.server(server,port)
+end
+
 function httpc.request(method, host, url, recvheader, header, content)
+	local timeout = httpc.timeout	-- get httpc.timeout before any blocked api
 	local hostname, port = host:match"([^:]+):?(%d*)$"
 	if port == "" then
 		port = 80
 	else
 		port = tonumber(port)
 	end
-	local fd = socket.connect(hostname, port)
+	if async_dns and not hostname:match(".*%d+$") then
+		hostname = dns.resolve(hostname)
+	end
+	local fd = socket.connect(hostname, port, timeout)
+	if not fd then
+		error(string.format("http connect error host:%s, port:%s, timeout:%s", hostname, port, timeout))
+		return
+	end
+	local finish
+	if timeout then
+		skynet.timeout(timeout, function()
+			if not finish then
+				socket.shutdown(fd)	-- shutdown the socket fd, need close later.
+			end
+		end)
+	end
 	local ok , statuscode, body = pcall(request, fd,method, host, url, recvheader, header, content)
+	finish = true
+	socket.close(fd)
 	if ok then
 		return statuscode, body
 	else
-		socket.close(fd)
 		error(statuscode)
 	end
 end

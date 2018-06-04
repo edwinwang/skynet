@@ -1,5 +1,5 @@
 local function getupvaluetable(u, func, unique)
-	i = 1
+	local i = 1
 	while true do
 		local name, value = debug.getupvalue(func, i)
 		if name == nil then
@@ -18,7 +18,7 @@ local function getupvaluetable(u, func, unique)
 	end
 end
 
-return function(source, filename , ...)
+return function(skynet, source, filename , ...)
 	if filename then
 		filename = "@" .. filename
 	else
@@ -44,7 +44,7 @@ return function(source, filename , ...)
 	if proto then
 		for k,v in pairs(proto) do
 			local name, dispatch = v.name, v.dispatch
-			if name and dispatch then
+			if name and dispatch and not p[name] then
 				local pp = {}
 				p[name] = pp
 				getupvaluetable(pp, dispatch, unique)
@@ -54,12 +54,13 @@ return function(source, filename , ...)
 	local env = setmetatable( { print = print , _U = u, _P = p}, { __index = _ENV })
 	local func, err = load(source, filename, "bt", env)
 	if not func then
-		return { err }
+		return false, { err }
 	end
-	local ok, err = xpcall(func, debug.traceback)
+	local ok, err = skynet.pcall(func)
 	if not ok then
 		table.insert(output, err)
+		return false, output
 	end
 
-	return output
+	return true, output
 end

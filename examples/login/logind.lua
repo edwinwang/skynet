@@ -1,5 +1,5 @@
 local login = require "snax.loginserver"
-local crypt = require "crypt"
+local crypt = require "skynet.crypt"
 local skynet = require "skynet"
 
 local server = {
@@ -19,7 +19,7 @@ function server.auth_handler(token)
 	user = crypt.base64decode(user)
 	server = crypt.base64decode(server)
 	password = crypt.base64decode(password)
-	assert(password == "password")
+	assert(password == "password", "Invalid password")
 	return server, user
 end
 
@@ -54,9 +54,9 @@ function CMD.logout(uid, subid)
 	end
 end
 
-function server.command_handler(command, source, ...)
+function server.command_handler(command, ...)
 	local f = assert(CMD[command])
-	return f(source, ...)
+	return f(...)
 end
 
 login(server)

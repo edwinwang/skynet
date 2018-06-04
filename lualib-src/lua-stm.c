@@ -1,11 +1,15 @@
+#define LUA_LIB
+
 #include <lua.h>
 #include <lauxlib.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <assert.h>
+#include <string.h>
 
 #include "rwlock.h"
 #include "skynet_malloc.h"
+#include "atomic.h"
 
 struct stm_object {
 	struct rwlock lock;
@@ -44,7 +48,7 @@ static void
 stm_releasecopy(struct stm_copy *copy) {
 	if (copy == NULL)
 		return;
-	if (__sync_sub_and_fetch(&copy->reference, 1) == 0) {
+	if (ATOM_DEC(&copy->reference) == 0) {
 		skynet_free(copy->msg);
 		skynet_free(copy);
 	}
@@ -69,7 +73,7 @@ stm_release(struct stm_object *obj) {
 static void
 stm_releasereader(struct stm_object *obj) {
 	rwlock_rlock(&obj->lock);
-	if (__sync_sub_and_fetch(&obj->reference,1) == 0) {
+	if (ATOM_DEC(&obj->reference) == 0) {
 		// last reader, no writer. so no need to unlock
 		assert(obj->copy == NULL);
 		skynet_free(obj);
@@ -81,7 +85,7 @@ stm_releasereader(struct stm_object *obj) {
 static void
 stm_grab(struct stm_object *obj) {
 	rwlock_rlock(&obj->lock);
-	int ref = __sync_fetch_and_add(&obj->reference,1);
+	int ref = ATOM_FINC(&obj->reference);
 	rwlock_runlock(&obj->lock);
 	assert(ref > 0);
 }
@@ -91,7 +95,7 @@ stm_copy(struct stm_object *obj) {
 	rwlock_rlock(&obj->lock);
 	struct stm_copy * ret = obj->copy;
 	if (ret) {
-		int ref = __sync_fetch_and_add(&ret->reference,1);
+		int ref = ATOM_FINC(&ret->reference);
 		assert(ref > 0);
 	}
 	rwlock_runlock(&obj->lock);
@@ -126,8 +130,16 @@ lcopy(lua_State *L) {
 
 static int
 lnewwriter(lua_State *L) {
-	void * msg = lua_touserdata(L, 1);
-	uint32_t sz = luaL_checkunsigned(L, 2);
+	void * msg;
+	size_t sz;
+	if (lua_isuserdata(L,1)) {
+		msg = lua_touserdata(L, 1);
+		sz = (size_t)luaL_checkinteger(L, 2);
+	} else {
+		const char * tmp = luaL_checklstring(L,1,&sz);
+		msg = skynet_malloc(sz);
+		memcpy(msg, tmp, sz);
+	}
 	struct boxstm * box = lua_newuserdata(L, sizeof(*box));
 	box->obj = stm_new(msg,sz);
 	lua_pushvalue(L, lua_upvalueindex(1));
@@ -148,8 +160,16 @@ ldeletewriter(lua_State *L) {
 static int
 lupdate(lua_State *L) {
 	struct boxstm * box = lua_touserdata(L, 1);
-	void * msg = lua_touserdata(L, 2);
-	uint32_t sz = luaL_checkunsigned(L, 3);
+	void * msg;
+	size_t sz;
+	if (lua_isuserdata(L, 2)) {
+		msg = lua_touserdata(L, 2);
+		sz = (size_t)luaL_checkinteger(L, 3);
+	} else {
+		const char * tmp = luaL_checklstring(L,2,&sz);
+		msg = skynet_malloc(sz);
+		memcpy(msg, tmp, sz);
+	}
 	stm_update(box->obj, msg, sz);
 
 	return 0;
@@ -186,6 +206,7 @@ static int
 lread(lua_State *L) {
 	struct boxreader * box = lua_touserdata(L, 1);
 	luaL_checktype(L, 2, LUA_TFUNCTION);
+
 	struct stm_copy * copy = stm_copy(box->obj);
 	if (copy == box->lastcopy) {
 		// not update
@@ -197,10 +218,13 @@ lread(lua_State *L) {
 	stm_releasecopy(box->lastcopy);
 	box->lastcopy = copy;
 	if (copy) {
+		lua_settop(L, 3);
+		lua_replace(L, 1);
 		lua_settop(L, 2);
 		lua_pushlightuserdata(L, copy->msg);
-		lua_pushunsigned(L, copy->sz);
-		lua_call(L, 2, LUA_MULTRET);
+		lua_pushinteger(L, copy->sz);
+		lua_pushvalue(L, 1);
+		lua_call(L, 3, LUA_MULTRET);
 		lua_pushboolean(L, 1);
 		lua_replace(L, 1);
 		return lua_gettop(L);
@@ -210,8 +234,8 @@ lread(lua_State *L) {
 	}
 }
 
-int
-luaopen_stm(lua_State *L) {
+LUAMOD_API int
+luaopen_skynet_stm(lua_State *L) {
 	luaL_checkversion(L);
 	lua_createtable(L, 0, 3);
 

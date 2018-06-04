@@ -1,3 +1,5 @@
+#define LUA_LIB
+
 #include <lua.h>
 #include <lauxlib.h>
 
@@ -5,12 +7,13 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #define SMALL_CHUNK 256
 
 /* the eight DES S-boxes */
 
-uint32_t SB1[64] = {
+static uint32_t SB1[64] = {
 	0x01010400, 0x00000000, 0x00010000, 0x01010404,
 	0x01010004, 0x00010404, 0x00000004, 0x00010000,
 	0x00000400, 0x01010400, 0x01010404, 0x00000400,
@@ -338,8 +341,13 @@ static int
 lrandomkey(lua_State *L) {
 	char tmp[8];
 	int i;
+	char x = 0;
 	for (i=0;i<8;i++) {
 		tmp[i] = random() & 0xff;
+		x ^= tmp[i];
+	}
+	if (x==0) {
+		tmp[0] |= 1;	// avoid 0
 	}
 	lua_pushlstring(L, tmp, 8);
 	return 1;
@@ -489,7 +497,7 @@ static int
 lfromhex(lua_State *L) {
 	size_t sz = 0;
 	const char * text = luaL_checklstring(L, 1, &sz);
-	if (sz & 2) {
+	if (sz & 1) {
 		return luaL_error(L, "Invalid hex text size %d", (int)sz);
 	}
 	char tmp[SMALL_CHUNK];
@@ -512,7 +520,7 @@ lfromhex(lua_State *L) {
 }
 
 // Constants are the integer part of the sines of integers (in radians) * 2^32.
-const uint32_t k[64] = {
+static const uint32_t k[64] = {
 0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee ,
 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501 ,
 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be ,
@@ -531,17 +539,16 @@ const uint32_t k[64] = {
 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391 };
  
 // r specifies the per-round shift amounts
-const uint32_t r[] = {7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+static const uint32_t r[] = {7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
 					  5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20,
 					  4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
 					  6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
  
 // leftrotate function definition
 #define LEFTROTATE(x, c) (((x) << (c)) | ((x) >> (32 - (c))))
- 
+
 static void
-hmac(uint32_t x[2], uint32_t y[2], uint32_t result[2]) {
-	uint32_t w[16];
+digest_md5(uint32_t w[16], uint32_t result[4]) {
 	uint32_t a, b, c, d, f, g, temp;
 	int i;
  
@@ -549,13 +556,6 @@ hmac(uint32_t x[2], uint32_t y[2], uint32_t result[2]) {
 	b = 0xefcdab89u;
 	c = 0x98badcfeu;
 	d = 0x10325476u;
-
-	for (i=0;i<16;i+=4) {
-		w[i] = x[1];
-		w[i+1] = x[0];
-		w[i+2] = y[1];
-		w[i+3] = y[0];
-	}
 
 	for(i = 0; i<64; i++) {
 		if (i < 16) {
@@ -577,11 +577,54 @@ hmac(uint32_t x[2], uint32_t y[2], uint32_t result[2]) {
 		c = b;
 		b = b + LEFTROTATE((a + f + k[i] + w[g]), r[i]);
 		a = temp;
-
 	}
 
-	result[0] = c^d;
-	result[1] = a^b;
+	result[0] = a;
+	result[1] = b;
+	result[2] = c;
+	result[3] = d;
+}
+
+// hmac64 use md5 algorithm without padding, and the result is (c^d .. a^b)
+static void
+hmac(uint32_t x[2], uint32_t y[2], uint32_t result[2]) {
+	uint32_t w[16];
+	uint32_t r[4];
+	int i;
+	for (i=0;i<16;i+=4) {
+		w[i] = x[1];
+		w[i+1] = x[0];
+		w[i+2] = y[1];
+		w[i+3] = y[0];
+	}
+
+	digest_md5(w,r);
+
+	result[0] = r[2]^r[3];
+	result[1] = r[0]^r[1];
+}
+
+static void
+hmac_md5(uint32_t x[2], uint32_t y[2], uint32_t result[2]) {
+	uint32_t w[16];
+	uint32_t r[4];
+	int i;
+	for (i=0;i<12;i+=4) {
+		w[i] = x[0];
+		w[i+1] = x[1];
+		w[i+2] = y[0];
+		w[i+3] = y[1];
+	}
+
+	w[12] = 0x80;
+	w[13] = 0;
+	w[14] = 384;
+	w[15] = 0;
+
+	digest_md5(w,r);
+
+	result[0] = (r[0] + 0x67452301u) ^ (r[2] + 0x98badcfeu);
+	result[1] = (r[1] + 0xefcdab89u) ^ (r[3] + 0x10325476u);
 }
 
 static void
@@ -602,11 +645,7 @@ read64(lua_State *L, uint32_t xx[2], uint32_t yy[2]) {
 }
 
 static int
-lhmac64(lua_State *L) {
-	uint32_t x[2], y[2];
-	read64(L, x, y);
-	uint32_t result[2];
-	hmac(x,y,result);
+pushqword(lua_State *L, uint32_t result[2]) {
 	uint8_t tmp[8];
 	tmp[0] = result[0] & 0xff;
 	tmp[1] = (result[0] >> 8 )& 0xff;
@@ -619,6 +658,55 @@ lhmac64(lua_State *L) {
 
 	lua_pushlstring(L, (const char *)tmp, 8);
 	return 1;
+}
+
+static int
+lhmac64(lua_State *L) {
+	uint32_t x[2], y[2];
+	read64(L, x, y);
+	uint32_t result[2];
+	hmac(x,y,result);
+	return pushqword(L, result);
+}
+
+/*
+  h1 = crypt.hmac64_md5(a,b)
+  m = md5.sum((a..b):rep(3))
+  h2 = crypt.xor_str(m:sub(1,8), m:sub(9,16))
+  assert(h1 == h2)
+ */
+static int
+lhmac64_md5(lua_State *L) {
+	uint32_t x[2], y[2];
+	read64(L, x, y);
+	uint32_t result[2];
+	hmac_md5(x,y,result);
+	return pushqword(L, result);
+}
+
+/*
+	8bytes key
+	string text
+ */
+static int
+lhmac_hash(lua_State *L) {
+	uint32_t key[2];
+	size_t sz = 0;
+	const uint8_t *x = (const uint8_t *)luaL_checklstring(L, 1, &sz);
+	if (sz != 8) {
+		luaL_error(L, "Invalid uint64 key");
+	}
+	key[0] = x[0] | x[1]<<8 | x[2]<<16 | x[3]<<24;
+	key[1] = x[4] | x[5]<<8 | x[6]<<16 | x[7]<<24;
+	const char * text = luaL_checklstring(L, 2, &sz);
+	uint8_t h[8];
+	Hash(text,(int)sz,h);
+	uint32_t htext[2];
+	htext[0] = h[0] | h[1]<<8 | h[2]<<16 | h[3]<<24;
+	htext[1] = h[4] | h[5]<<8 | h[6]<<16 | h[7]<<24;
+	uint32_t result[2];
+	hmac(htext,key,result);
+	return pushqword(L, result);
 }
 
 // powmodp64 for DH-key exchange
@@ -688,8 +776,11 @@ static int
 ldhsecret(lua_State *L) {
 	uint32_t x[2], y[2];
 	read64(L, x, y);
-	uint64_t r = powmodp((uint64_t)x[0] | (uint64_t)x[1]<<32,
-		(uint64_t)y[0] | (uint64_t)y[1]<<32);
+	uint64_t xx = (uint64_t)x[0] | (uint64_t)x[1]<<32;
+	uint64_t yy = (uint64_t)y[0] | (uint64_t)y[1]<<32;
+	if (xx == 0 || yy == 0)
+		return luaL_error(L, "Can't be 0");
+	uint64_t r = powmodp(xx, yy);
 
 	push64(L, r);
 
@@ -709,7 +800,11 @@ ldhexchange(lua_State *L) {
 	xx[0] = x[0] | x[1]<<8 | x[2]<<16 | x[3]<<24;
 	xx[1] = x[4] | x[5]<<8 | x[6]<<16 | x[7]<<24;
 
-	uint64_t r = powmodp(5,	(uint64_t)xx[0] | (uint64_t)xx[1]<<32);
+	uint64_t x64 = (uint64_t)xx[0] | (uint64_t)xx[1]<<32;
+	if (x64 == 0)
+		return luaL_error(L, "Can't be 0");
+
+	uint64_t r = powmodp(G,	x64);
 	push64(L, r);
 	return 1;
 }
@@ -836,14 +931,38 @@ lb64decode(lua_State *L) {
 	return 1;
 }
 
+static int
+lxor_str(lua_State *L) {
+	size_t len1,len2;
+	const char *s1 = luaL_checklstring(L,1,&len1);
+	const char *s2 = luaL_checklstring(L,2,&len2);
+	if (len2 == 0) {
+		return luaL_error(L, "Can't xor empty string");
+	}
+	luaL_Buffer b;
+	char * buffer = luaL_buffinitsize(L, &b, len1);
+	int i;
+	for (i=0;i<len1;i++) {
+		buffer[i] = s1[i] ^ s2[i % len2];
+	}
+	luaL_addsize(&b, len1);
+	luaL_pushresult(&b);
+	return 1;
+}
+
 // defined in lsha1.c
 int lsha1(lua_State *L);
 int lhmac_sha1(lua_State *L);
 
-int
-luaopen_crypt(lua_State *L) {
+LUAMOD_API int
+luaopen_skynet_crypt(lua_State *L) {
 	luaL_checkversion(L);
-	srandom(time(NULL));
+	static int init = 0;
+	if (!init) {
+		// Don't need call srandom more than once.
+		init = 1 ;
+		srandom((random() << 8) ^ (time(NULL) << 16) ^ getpid());
+	}
 	luaL_Reg l[] = {
 		{ "hashkey", lhashkey },
 		{ "randomkey", lrandomkey },
@@ -852,14 +971,22 @@ luaopen_crypt(lua_State *L) {
 		{ "hexencode", ltohex },
 		{ "hexdecode", lfromhex },
 		{ "hmac64", lhmac64 },
+		{ "hmac64_md5", lhmac64_md5 },
 		{ "dhexchange", ldhexchange },
 		{ "dhsecret", ldhsecret },
 		{ "base64encode", lb64encode },
 		{ "base64decode", lb64decode },
 		{ "sha1", lsha1 },
 		{ "hmac_sha1", lhmac_sha1 },
+		{ "hmac_hash", lhmac_hash },
+		{ "xor_str", lxor_str },
 		{ NULL, NULL },
 	};
 	luaL_newlib(L,l);
 	return 1;
+}
+
+LUAMOD_API int
+luaopen_client_crypt(lua_State *L) {
+	return luaopen_skynet_crypt(L);
 }

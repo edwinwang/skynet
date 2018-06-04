@@ -1,5 +1,5 @@
 local skynet = require "skynet"
-local sharedata = require "sharedata"
+local sharedata = require "skynet.sharedata"
 
 local mode = ...
 
@@ -35,6 +35,16 @@ skynet.start(function()
 
 	for k,v in ipairs(b) do
 		skynet.error(string.format("b[%d]=%s", k,v))
+	end
+
+	-- test lua serialization
+	local s = skynet.packstring(obj)
+	local nobj = skynet.unpack(s)
+	for k,v in pairs(nobj) do
+		skynet.error(string.format("nobj[%s]=%s", k,v))
+	end
+	for k,v in ipairs(nobj.b) do
+		skynet.error(string.format("nobj.b[%d]=%s", k,v))
 	end
 
 	for i = 1, 5 do
