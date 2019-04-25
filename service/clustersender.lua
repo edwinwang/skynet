@@ -4,6 +4,8 @@ local socket = require "skynet.socket"
 local cluster = require "skynet.cluster.core"
 local ignoreret = skynet.ignoreret
 
+local node, nodename = ...
+
 local channel
 local session = 1
 
@@ -80,7 +82,7 @@ function command.changenode(host, port)
 			response = read_response,
 			nodelay = true,
 		}
-	succ, err = pcall(c.connect, c, true)
+	local succ, err = pcall(c.connect, c, true)
 	if channel then
 		channel:close()
 	end

@@ -44,7 +44,7 @@ local function open_channel(t, key)
 		local host, port = string.match(address, "([^:]+):(.*)$")
 		c = node_sender[key]
 		if c == nil then
-			c = skynet.newservice "clustersender"
+			c = skynet.newservice("clustersender", key, address)
 			if node_sender[key] then
 				-- double check
 				skynet.kill(c)
