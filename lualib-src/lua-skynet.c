@@ -278,6 +278,11 @@ send_message(lua_State *L, int source, int idx_type) {
 		luaL_error(L, "invalid param %s", lua_typename(L, lua_type(L,idx_type+2)));
 	}
 	if (session < 0) {
+		if (session == -2) {
+			// package is too large
+			lua_pushboolean(L, 0);
+			return 1;
+		}
 		// send to invalid address
 		// todo: maybe throw an error would be better
 		return 0;
@@ -417,19 +422,25 @@ struct source_info {
 /*
 	string tag
 	string userstring
-	thread co (default nil)
-	integer level
+	thread co (default nil/current L)
+	integer level (default nil)
  */
 static int
 ltrace(lua_State *L) {
 	struct skynet_context * context = lua_touserdata(L, lua_upvalueindex(1));
 	const char * tag = luaL_checkstring(L, 1);
 	const char * user = luaL_checkstring(L, 2);
-	if (lua_isthread(L, 3)) {
-		lua_State * co = lua_tothread (L, 3);
+	if (!lua_isnoneornil(L, 3)) {
+		lua_State * co = L;
+		int level;
+		if (lua_isthread(L, 3)) {
+			co = lua_tothread (L, 3);
+			level = luaL_optinteger(L, 4, 1);
+		} else {
+			level = luaL_optinteger(L, 3, 1);
+		}
 		struct source_info si[MAX_LEVEL];
 		lua_Debug d;
-		int level = luaL_checkinteger(L, 4);
 		int index = 0;
 		do {
 			if (!lua_getstack(co, level, &d))
